@@ -38,11 +38,7 @@ Act as a quantitative developer from a tier 1 firm (e.g., Jane Street, Citadel, 
 ## Project Specifics
 
 ### Trading System Requirements
-- Signal history snapshots should use lazy loading (avoid 2.5hr full load)
-- Cache hydration strategy for immediate conviction scores after restart
-- Data flow: signals → conviction scores → cache
-- All scoring methods must be statistically validated
-- Handle missing data, outliers, and market microstructure noise properly
+
 
 ### Code Quality Standards
 - Type hints for all functions
