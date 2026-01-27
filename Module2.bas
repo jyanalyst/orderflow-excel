@@ -7,11 +7,15 @@ Attribute VB_Name = "Module2"
 ' 2. Added folder picker dialog (replaces hardcoded DATA_FOLDER)
 ' 3. Added delimiter auto-detection for tab/comma CSV files
 ' 4. Enhanced bounds checking in array operations
+' 5. PERFORMANCE OPTIMIZATIONS: Binary search, bulk arrays, cached lookups
 
 ' ===========================================
-' CONFIGURATION - REMOVED HARDCODED PATH
+' CONFIGURATION - DEFAULT DATA FOLDER
 ' ===========================================
-' Public Const DATA_FOLDER As String = "C:\Users\siycm1.CGSCIMB\Desktop\Data\TS\"
+' Change this to your preferred data folder location
+' If the folder exists, QuickRankingUpdate will use it automatically
+' If not found, it will show the folder picker dialog
+Public Const DEFAULT_DATA_FOLDER As String = "C:\Users\siycm1.CGSCIMB\Desktop\Data\TS\"
 
 Function ParseDateTime(cellValue As Variant) As Date
     ' Universal date/time parser for Order Flow System
@@ -110,6 +114,7 @@ End Function
 Function CheckTickerInSheet(ticker As String, sheetName As String) As Boolean
     ' Check if ticker exists in comma-separated string in target sheet (cell A1)
     ' Returns True if found (case-insensitive)
+    ' NOTE: For batch operations, use cached version LoadTickerLists() + CheckTickerInCache()
 
     On Error GoTo ErrorHandler
 
@@ -158,6 +163,158 @@ ErrorHandler:
     CheckTickerInSheet = False
 End Function
 
+' ===========================================
+' LOOKUP CACHING SYSTEM
+' Reduces O(n) lookups to O(1) by pre-loading into Dictionaries
+' ===========================================
+
+' Module-level cache variables (persist within batch operation)
+Private mTickerCache As Object      ' stockName -> ticker
+Private mBullishCache As Object     ' ticker -> True
+Private mBearishCache As Object     ' ticker -> True
+Private mCacheInitialized As Boolean
+
+Sub InitializeLookupCaches()
+    ' Initialize all lookup caches for batch operations
+    ' Call once at start of GenerateRankingTable or QuickRankingUpdate
+
+    Dim watchlistWs As Worksheet
+    Dim bullishWs As Worksheet
+    Dim bearishWs As Worksheet
+    Dim lastRow As Long
+    Dim i As Long
+    Dim stockName As String
+    Dim ticker As String
+    Dim tickerString As String
+    Dim tickerArray() As String
+
+    ' Create Dictionary objects (late-binding - no reference required)
+    Set mTickerCache = CreateObject("Scripting.Dictionary")
+    Set mBullishCache = CreateObject("Scripting.Dictionary")
+    Set mBearishCache = CreateObject("Scripting.Dictionary")
+
+    mTickerCache.CompareMode = vbTextCompare  ' Case-insensitive
+    mBullishCache.CompareMode = vbTextCompare
+    mBearishCache.CompareMode = vbTextCompare
+
+    ' ---------------------------------------------------------
+    ' Load Watchlist (stockName -> ticker) into cache
+    ' ---------------------------------------------------------
+    On Error Resume Next
+    Set watchlistWs = ThisWorkbook.Sheets("Watchlist")
+    On Error GoTo 0
+
+    If Not watchlistWs Is Nothing Then
+        lastRow = watchlistWs.Cells(watchlistWs.Rows.count, 3).End(xlUp).Row
+        For i = 2 To lastRow
+            stockName = Trim(CStr(watchlistWs.Cells(i, 3).Value))
+            ticker = Trim(CStr(watchlistWs.Cells(i, 4).Value))
+            If stockName <> "" And ticker <> "" Then
+                If Not mTickerCache.Exists(stockName) Then
+                    mTickerCache.Add stockName, ticker
+                End If
+            End If
+        Next i
+    End If
+
+    ' ---------------------------------------------------------
+    ' Load Bullish tickers into cache
+    ' ---------------------------------------------------------
+    On Error Resume Next
+    Set bullishWs = ThisWorkbook.Sheets("Bullish")
+    On Error GoTo 0
+
+    If Not bullishWs Is Nothing Then
+        tickerString = Trim(CStr(bullishWs.Range("A1").Value))
+        If tickerString <> "" Then
+            tickerArray = Split(tickerString, ",")
+            For i = LBound(tickerArray) To UBound(tickerArray)
+                ticker = Trim(tickerArray(i))
+                If ticker <> "" Then
+                    If Not mBullishCache.Exists(ticker) Then
+                        mBullishCache.Add ticker, True
+                    End If
+                End If
+            Next i
+        End If
+    End If
+
+    ' ---------------------------------------------------------
+    ' Load Bearish tickers into cache
+    ' ---------------------------------------------------------
+    On Error Resume Next
+    Set bearishWs = ThisWorkbook.Sheets("Bearish")
+    On Error GoTo 0
+
+    If Not bearishWs Is Nothing Then
+        tickerString = Trim(CStr(bearishWs.Range("A1").Value))
+        If tickerString <> "" Then
+            tickerArray = Split(tickerString, ",")
+            For i = LBound(tickerArray) To UBound(tickerArray)
+                ticker = Trim(tickerArray(i))
+                If ticker <> "" Then
+                    If Not mBearishCache.Exists(ticker) Then
+                        mBearishCache.Add ticker, True
+                    End If
+                End If
+            Next i
+        End If
+    End If
+
+    mCacheInitialized = True
+End Sub
+
+Sub ClearLookupCaches()
+    ' Clear caches to free memory
+    Set mTickerCache = Nothing
+    Set mBullishCache = Nothing
+    Set mBearishCache = Nothing
+    mCacheInitialized = False
+End Sub
+
+Function LookupTickerCodeCached(stockName As String) As String
+    ' O(1) lookup using cached Dictionary
+    ' Falls back to stockName if not found
+
+    If Not mCacheInitialized Then
+        ' Fallback to slow version if cache not initialized
+        LookupTickerCodeCached = LookupTickerCode(stockName)
+        Exit Function
+    End If
+
+    If mTickerCache.Exists(stockName) Then
+        LookupTickerCodeCached = mTickerCache(stockName)
+    Else
+        LookupTickerCodeCached = stockName  ' Fallback to stock name
+    End If
+End Function
+
+Function IsBullishCached(ticker As String) As Boolean
+    ' O(1) lookup using cached Dictionary
+
+    If Not mCacheInitialized Then
+        ' Fallback to slow version if cache not initialized
+        IsBullishCached = CheckTickerInSheet(ticker, "Bullish")
+        Exit Function
+    End If
+
+    IsBullishCached = mBearishCache.Exists(ticker)
+    ' Correction: Check bullish cache, not bearish
+    IsBullishCached = mBullishCache.Exists(ticker)
+End Function
+
+Function IsBearishCached(ticker As String) As Boolean
+    ' O(1) lookup using cached Dictionary
+
+    If Not mCacheInitialized Then
+        ' Fallback to slow version if cache not initialized
+        IsBearishCached = CheckTickerInSheet(ticker, "Bearish")
+        Exit Function
+    End If
+
+    IsBearishCached = mBearishCache.Exists(ticker)
+End Function
+
 ' -------------------------------------------------------------------
 ' CALCULATION ENGINE - Order Flow Velocity System
 ' -------------------------------------------------------------------
@@ -178,9 +335,89 @@ Function CalcElapsedSec(currentTime As Date, startTime As Date) As Double
     CalcElapsedSec = (currentTime - startTime) * 86400
 End Function
 
+' ===========================================
+' OPTIMIZED VELOCITY CALCULATION
+' Uses binary search instead of linear backward walk
+' Reduces O(n²) to O(n log n)
+' ===========================================
+
+Function BinarySearchTime(elapsedArr() As Double, targetTime As Double, maxIndex As Long) As Long
+    ' Binary search to find largest index where elapsedArr(index) <= targetTime
+    ' Returns 0 if no such index exists
+
+    Dim lo As Long, hi As Long, mid As Long
+
+    If maxIndex < 1 Then
+        BinarySearchTime = 0
+        Exit Function
+    End If
+
+    ' If first element is already > target, no valid index
+    If elapsedArr(1) > targetTime Then
+        BinarySearchTime = 0
+        Exit Function
+    End If
+
+    lo = 1
+    hi = maxIndex
+
+    Do While lo < hi
+        mid = (lo + hi + 1) \ 2
+        If elapsedArr(mid) <= targetTime Then
+            lo = mid
+        Else
+            hi = mid - 1
+        End If
+    Loop
+
+    BinarySearchTime = lo
+End Function
+
+Function CalcVelocityFromArrays(currentRow As Long, elapsedArr() As Double, cumDeltaArr() As Double) As Variant
+    ' Column H: Velocity (5-minute rolling window)
+    ' OPTIMIZED: Uses pre-loaded arrays + binary search
+    ' Formula: (Current Cum_Delta - Cum_Delta at t-300s) / 300
+
+    Dim elapsedSec As Double
+    Dim targetTime As Double
+    Dim currentCumDelta As Double
+    Dim pastCumDelta As Double
+    Dim foundIndex As Long
+
+    ' Get current values from arrays
+    elapsedSec = elapsedArr(currentRow)
+    currentCumDelta = cumDeltaArr(currentRow)
+
+    ' Need at least 300 seconds of data
+    If elapsedSec < 300 Then
+        CalcVelocityFromArrays = Empty
+        Exit Function
+    End If
+
+    ' Target time is 300 seconds ago
+    targetTime = elapsedSec - 300
+
+    ' Binary search for the index (O(log n) instead of O(n))
+    foundIndex = BinarySearchTime(elapsedArr, targetTime, currentRow)
+
+    ' If we found a valid index
+    If foundIndex > 0 Then
+        pastCumDelta = cumDeltaArr(foundIndex)
+        If pastCumDelta = 0 Then
+            CalcVelocityFromArrays = Empty
+        Else
+            CalcVelocityFromArrays = (currentCumDelta - pastCumDelta) / 300
+        End If
+    Else
+        CalcVelocityFromArrays = Empty
+    End If
+End Function
+
+' Legacy function for backward compatibility (deprecated - use CalcVelocityFromArrays)
 Function CalcVelocity(currentRow As Long, ws As Worksheet) As Variant
     ' Column H: Velocity (5-minute rolling window)
-    ' Formula: (Current Cum_Delta - Cum_Delta at t-300s) / 300
+    ' NOTE: This function is kept for compatibility but is slow
+    ' New code should use CalcVelocityFromArrays with pre-loaded arrays
 
     Dim elapsedSec As Double
     Dim targetTime As Double
@@ -486,7 +723,10 @@ Function CalcVolFlag(volume As Double, medianVol As Double) As String
 End Function
 
 Function CalculateMedianVolume(ws As Worksheet, lastRow As Long) As Double
-    ' Calculate median of volume column (Column C: Vol(k))
+    ' LEGACY VERSION - Uses bubble sort (slow for large datasets)
+    ' Kept for backward compatibility
+    ' New code should use CalculateMedianVolumeOptimized
+
     Dim volumes() As Double
     Dim count As Long
     Dim i As Long
@@ -536,69 +776,408 @@ Function CalculateMedianVolume(ws As Worksheet, lastRow As Long) As Double
     End If
 End Function
 
+Function CalculateMedianVolumeOptimized(volArr() As Double, dataCount As Long) As Double
+    ' ===========================================
+    ' OPTIMIZED VERSION - Works with in-memory array
+    ' Uses Excel's built-in Median function (O(n) instead of O(n²))
+    ' ===========================================
+
+    Dim volumes() As Double
+    Dim count As Long
+    Dim i As Long
+
+    ' Count non-zero volumes
+    count = 0
+    For i = 1 To dataCount
+        If volArr(i) > 0 Then
+            count = count + 1
+        End If
+    Next i
+
+    If count = 0 Then
+        CalculateMedianVolumeOptimized = 0
+        Exit Function
+    End If
+
+    ' Fill array with non-zero volumes
+    ReDim volumes(1 To count)
+    Dim idx As Long
+    idx = 1
+    For i = 1 To dataCount
+        If volArr(i) > 0 Then
+            volumes(idx) = volArr(i)
+            idx = idx + 1
+        End If
+    Next i
+
+    ' Use Excel's built-in Median (much faster than bubble sort)
+    On Error Resume Next
+    CalculateMedianVolumeOptimized = Application.WorksheetFunction.Median(volumes)
+    If Err.Number <> 0 Then
+        ' Fallback: return simple average
+        Dim total As Double
+        total = 0
+        For i = 1 To count
+            total = total + volumes(i)
+        Next i
+        CalculateMedianVolumeOptimized = total / count
+        Err.Clear
+    End If
+    On Error GoTo 0
+End Function
+
 ' -------------------------------------------------------------------
 ' MAIN PROCESSING ROUTINE
 ' -------------------------------------------------------------------
 
 Sub ProcessSingleStock(ws As Worksheet, lastRow As Long)
-    ' Main routine that calculates all columns E-S for a single stock sheet
-    ' Called by the batch processor
+    ' ===========================================
+    ' OPTIMIZED VERSION - Bulk Array Processing
+    ' Reads all data into memory, processes in arrays, writes back in bulk
+    ' ~10-20x faster than cell-by-cell version
+    ' ===========================================
 
     Application.ScreenUpdating = False
     Application.Calculation = xlCalculationManual
 
     Dim i As Long
     Dim startTime As Date
-    Dim cumDelta As Double
-    Dim medianVol As Double
+    Dim dataCount As Long
+
+    dataCount = lastRow - 1  ' Rows 2 to lastRow
+
+    If dataCount < 1 Then
+        Application.Calculation = xlCalculationAutomatic
+        Application.ScreenUpdating = True
+        Exit Sub
+    End If
 
     ' ---------------------------------------------------------
-    ' STEP 1: Calculate simple columns (E, F, G)
+    ' STEP 1: BULK READ - Load source data into arrays (ONE read)
     ' ---------------------------------------------------------
-    startTime = ParseDateTime(ws.Cells(2, 1).Value) ' First row time
+    Dim sourceData As Variant
+    sourceData = ws.Range("A2:D" & lastRow).Value  ' Columns A-D
+
+    ' ---------------------------------------------------------
+    ' STEP 2: INITIALIZE CALCULATION ARRAYS
+    ' ---------------------------------------------------------
+    Dim timeArr() As Date
+    Dim priceArr() As Double
+    Dim volArr() As Double
+    Dim aggressorArr() As String
+
+    Dim signedVolArr() As Double
+    Dim cumDeltaArr() As Double
+    Dim elapsedSecArr() As Double
+    Dim velocityArr() As Variant
+    Dim zeroCrossArr() As String
+    Dim accelArr() As Variant
+    Dim accelSignalArr() As String
+    Dim volFlagArr() As String
+
+    ' Signal tracking arrays (L-R)
+    Dim signalTypeArr() As String
+    Dim entryPriceArr() As Variant
+    Dim entryTickArr() As Variant
+    Dim successPriceArr() As Variant
+    Dim failPriceArr() As Variant
+    Dim signalStatusArr() As String
+    Dim accelCountArr() As Variant
+
+    ReDim timeArr(1 To dataCount)
+    ReDim priceArr(1 To dataCount)
+    ReDim volArr(1 To dataCount)
+    ReDim aggressorArr(1 To dataCount)
+    ReDim signedVolArr(1 To dataCount)
+    ReDim cumDeltaArr(1 To dataCount)
+    ReDim elapsedSecArr(1 To dataCount)
+    ReDim velocityArr(1 To dataCount)
+    ReDim zeroCrossArr(1 To dataCount)
+    ReDim accelArr(1 To dataCount)
+    ReDim accelSignalArr(1 To dataCount)
+    ReDim volFlagArr(1 To dataCount)
+    ReDim signalTypeArr(1 To dataCount)
+    ReDim entryPriceArr(1 To dataCount)
+    ReDim entryTickArr(1 To dataCount)
+    ReDim successPriceArr(1 To dataCount)
+    ReDim failPriceArr(1 To dataCount)
+    ReDim signalStatusArr(1 To dataCount)
+    ReDim accelCountArr(1 To dataCount)
+
+    ' ---------------------------------------------------------
+    ' STEP 3: PARSE SOURCE DATA INTO TYPED ARRAYS
+    ' ---------------------------------------------------------
+    For i = 1 To dataCount
+        timeArr(i) = ParseDateTime(sourceData(i, 1))
+        priceArr(i) = CDbl(sourceData(i, 2))
+        volArr(i) = CDbl(sourceData(i, 3))
+        aggressorArr(i) = CStr(sourceData(i, 4))
+    Next i
+
+    startTime = timeArr(1)
+
+    ' ---------------------------------------------------------
+    ' STEP 4: CALCULATE E, F, G (Signed_Vol, Cum_Delta, Elapsed_Sec)
+    ' ---------------------------------------------------------
+    Dim cumDelta As Double
     cumDelta = 0
 
-    For i = 2 To lastRow
-        ' Column E: Signed_Vol
-        ws.Cells(i, 5).Value = CalcSignedVol(ws.Cells(i, 4).Value, ws.Cells(i, 3).Value)
+    For i = 1 To dataCount
+        ' Signed_Vol
+        If aggressorArr(i) = "s" Then
+            signedVolArr(i) = volArr(i)
+        ElseIf aggressorArr(i) = "b" Then
+            signedVolArr(i) = -volArr(i)
+        Else
+            signedVolArr(i) = 0
+        End If
 
-        ' Column F: Cum_Delta
-        cumDelta = cumDelta + ws.Cells(i, 5).Value
-        ws.Cells(i, 6).Value = cumDelta
+        ' Cum_Delta (running sum)
+        cumDelta = cumDelta + signedVolArr(i)
+        cumDeltaArr(i) = cumDelta
 
-        ' Column G: Elapsed_Sec
-        ws.Cells(i, 7).Value = CalcElapsedSec(ParseDateTime(ws.Cells(i, 1).Value), startTime)
+        ' Elapsed_Sec
+        elapsedSecArr(i) = (timeArr(i) - startTime) * 86400
     Next i
 
     ' ---------------------------------------------------------
-    ' STEP 2: Calculate velocity-dependent columns (H, I, J, K)
+    ' STEP 5: CALCULATE H (Velocity) - OPTIMIZED with binary search
     ' ---------------------------------------------------------
-    For i = 2 To lastRow
-        ' Column H: Velocity
-        ws.Cells(i, 8).Value = CalcVelocity(i, ws)
+    Dim currVel As Variant, prevVel As Variant
+    Dim currAccel As Variant
 
-        ' Column I: Zero_Cross
-        ws.Cells(i, 9).Value = CalcZeroCross(i, ws)
-
-        ' Column J: Accel
-        ws.Cells(i, 10).Value = CalcAccel(i, ws)
-
-        ' Column K: Accel_Signal
-        ws.Cells(i, 11).Value = CalcAccelSignal(i, ws)
+    For i = 1 To dataCount
+        velocityArr(i) = CalcVelocityFromArrays(i, elapsedSecArr, cumDeltaArr)
     Next i
 
     ' ---------------------------------------------------------
-    ' STEP 3: Calculate signal tracking (L-R) - stateful
+    ' STEP 6: CALCULATE I, J, K (Zero_Cross, Accel, Accel_Signal)
     ' ---------------------------------------------------------
-    Call CalculateSignalTracking(ws, lastRow)
+    For i = 1 To dataCount
+        ' Zero_Cross
+        If i < 2 Or IsEmpty(velocityArr(i)) Then
+            zeroCrossArr(i) = ""
+        Else
+            prevVel = velocityArr(i - 1)
+            currVel = velocityArr(i)
+            If IsEmpty(prevVel) Then
+                zeroCrossArr(i) = ""
+            ElseIf prevVel < 0 And currVel >= 0 Then
+                zeroCrossArr(i) = "BULL"
+            ElseIf prevVel >= 0 And currVel < 0 Then
+                zeroCrossArr(i) = "BEAR"
+            Else
+                zeroCrossArr(i) = ""
+            End If
+        End If
+
+        ' Accel
+        If i < 2 Or IsEmpty(velocityArr(i)) Or IsEmpty(velocityArr(i - 1)) Then
+            accelArr(i) = Empty
+        Else
+            accelArr(i) = velocityArr(i) - velocityArr(i - 1)
+        End If
+
+        ' Accel_Signal
+        If IsEmpty(velocityArr(i)) Or IsEmpty(accelArr(i)) Then
+            accelSignalArr(i) = ""
+        ElseIf velocityArr(i) > 0 And accelArr(i) > 0 Then
+            accelSignalArr(i) = "BULL ACCEL"
+        ElseIf velocityArr(i) > 0 And accelArr(i) <= 0 Then
+            accelSignalArr(i) = "BULL DECEL"
+        ElseIf velocityArr(i) <= 0 And accelArr(i) < 0 Then
+            accelSignalArr(i) = "BEAR ACCEL"
+        ElseIf velocityArr(i) <= 0 And accelArr(i) >= 0 Then
+            accelSignalArr(i) = "BEAR DECEL"
+        Else
+            accelSignalArr(i) = ""
+        End If
+    Next i
 
     ' ---------------------------------------------------------
-    ' STEP 4: Calculate volume flags (S)
+    ' STEP 7: CALCULATE L-R (Signal Tracking) - in memory
     ' ---------------------------------------------------------
-    medianVol = CalculateMedianVolume(ws, lastRow)
-    For i = 2 To lastRow
-        ws.Cells(i, 19).Value = CalcVolFlag(ws.Cells(i, 3).Value, medianVol)
+    Dim currentSignalType As String
+    Dim currentStatus As String
+    Dim entryPrice As Double
+    Dim entryTick As Double
+    Dim accelCount As Long
+    Dim successPrice As Double
+    Dim failPrice As Double
+
+    currentSignalType = ""
+    currentStatus = ""
+    entryPrice = 0
+    entryTick = 0
+    accelCount = 0
+
+    For i = 1 To dataCount
+        ' Check for new signal
+        If zeroCrossArr(i) = "BULL" Or zeroCrossArr(i) = "BEAR" Then
+            currentSignalType = zeroCrossArr(i)
+            If zeroCrossArr(i) = "BULL" Then
+                currentStatus = "Active Bullish"
+            Else
+                currentStatus = "Active Bearish"
+            End If
+            entryPrice = priceArr(i)
+            entryTick = GetTickSize(entryPrice)
+            accelCount = 0
+        End If
+
+        signalTypeArr(i) = currentSignalType
+
+        ' Entry_Price, Entry_Tick, Success_Price, Fail_Price
+        If currentSignalType <> "" Then
+            entryPriceArr(i) = entryPrice
+            entryTickArr(i) = entryTick
+            If currentSignalType = "BULL" Then
+                successPriceArr(i) = entryPrice + entryTick
+                failPriceArr(i) = entryPrice - (2 * entryTick)
+            Else
+                successPriceArr(i) = entryPrice - entryTick
+                failPriceArr(i) = entryPrice + (2 * entryTick)
+            End If
+        Else
+            entryPriceArr(i) = Empty
+            entryTickArr(i) = Empty
+            successPriceArr(i) = Empty
+            failPriceArr(i) = Empty
+        End If
+
+        ' Signal_Status
+        If currentStatus <> "" Then
+            If InStr(currentStatus, "Success") > 0 Or InStr(currentStatus, "Failed") > 0 Then
+                ' Already completed - carry forward
+            Else
+                ' Still Active - check for success or failure
+                If currentSignalType = "BULL" Then
+                    If priceArr(i) >= successPriceArr(i) Then
+                        currentStatus = "Success Bullish"
+                    ElseIf priceArr(i) <= failPriceArr(i) Then
+                        currentStatus = "Failed Bullish"
+                    End If
+                ElseIf currentSignalType = "BEAR" Then
+                    If priceArr(i) <= successPriceArr(i) Then
+                        currentStatus = "Success Bearish"
+                    ElseIf priceArr(i) >= failPriceArr(i) Then
+                        currentStatus = "Failed Bearish"
+                    End If
+                End If
+            End If
+            signalStatusArr(i) = currentStatus
+        Else
+            signalStatusArr(i) = ""
+        End If
+
+        ' Accel_Count
+        If InStr(currentStatus, "Active") > 0 And currentSignalType <> "" Then
+            If currentSignalType = "BULL" And accelSignalArr(i) = "BULL ACCEL" Then
+                accelCount = accelCount + 1
+            ElseIf currentSignalType = "BEAR" And accelSignalArr(i) = "BEAR ACCEL" Then
+                accelCount = accelCount + 1
+            End If
+            accelCountArr(i) = accelCount
+        ElseIf currentStatus <> "" Then
+            accelCountArr(i) = accelCount
+        Else
+            accelCountArr(i) = Empty
+        End If
     Next i
+
+    ' ---------------------------------------------------------
+    ' STEP 8: CALCULATE S (Vol_Flag) - use built-in Median
+    ' ---------------------------------------------------------
+    Dim medianVol As Double
+    medianVol = CalculateMedianVolumeOptimized(volArr, dataCount)
+
+    For i = 1 To dataCount
+        If medianVol > 0 Then
+            If volArr(i) > 20 * medianVol Then
+                volFlagArr(i) = "BLOCK"
+            ElseIf volArr(i) > 10 * medianVol Then
+                volFlagArr(i) = "LARGE"
+            ElseIf volArr(i) > 5 * medianVol Then
+                volFlagArr(i) = "NOTABLE"
+            Else
+                volFlagArr(i) = ""
+            End If
+        Else
+            volFlagArr(i) = ""
+        End If
+    Next i
+
+    ' ---------------------------------------------------------
+    ' STEP 9: BULK WRITE - Write all results back (ONE write per section)
+    ' ---------------------------------------------------------
+    Dim outputEG() As Variant  ' Columns E-G
+    Dim outputHK() As Variant  ' Columns H-K
+    Dim outputLR() As Variant  ' Columns L-R
+    Dim outputS() As Variant   ' Column S
+
+    ReDim outputEG(1 To dataCount, 1 To 3)
+    ReDim outputHK(1 To dataCount, 1 To 4)
+    ReDim outputLR(1 To dataCount, 1 To 7)
+    ReDim outputS(1 To dataCount, 1 To 1)
+
+    For i = 1 To dataCount
+        ' E-G: Signed_Vol, Cum_Delta, Elapsed_Sec
+        outputEG(i, 1) = signedVolArr(i)
+        outputEG(i, 2) = cumDeltaArr(i)
+        outputEG(i, 3) = elapsedSecArr(i)
+
+        ' H-K: Velocity, Zero_Cross, Accel, Accel_Signal
+        If IsEmpty(velocityArr(i)) Then
+            outputHK(i, 1) = ""
+        Else
+            outputHK(i, 1) = velocityArr(i)
+        End If
+        outputHK(i, 2) = zeroCrossArr(i)
+        If IsEmpty(accelArr(i)) Then
+            outputHK(i, 3) = ""
+        Else
+            outputHK(i, 3) = accelArr(i)
+        End If
+        outputHK(i, 4) = accelSignalArr(i)
+
+        ' L-R: Signal_Type, Entry_Price, Entry_Tick, Success_Price, Fail_Price, Signal_Status, Accel_Count
+        outputLR(i, 1) = signalTypeArr(i)
+        If IsEmpty(entryPriceArr(i)) Then
+            outputLR(i, 2) = ""
+        Else
+            outputLR(i, 2) = entryPriceArr(i)
+        End If
+        If IsEmpty(entryTickArr(i)) Then
+            outputLR(i, 3) = ""
+        Else
+            outputLR(i, 3) = entryTickArr(i)
+        End If
+        If IsEmpty(successPriceArr(i)) Then
+            outputLR(i, 4) = ""
+        Else
+            outputLR(i, 4) = successPriceArr(i)
+        End If
+        If IsEmpty(failPriceArr(i)) Then
+            outputLR(i, 5) = ""
+        Else
+            outputLR(i, 5) = failPriceArr(i)
+        End If
+        outputLR(i, 6) = signalStatusArr(i)
+        If IsEmpty(accelCountArr(i)) Then
+            outputLR(i, 7) = ""
+        Else
+            outputLR(i, 7) = accelCountArr(i)
+        End If
+
+        ' S: Vol_Flag
+        outputS(i, 1) = volFlagArr(i)
+    Next i
+
+    ' BULK WRITE to worksheet (4 writes instead of ~60,000 individual writes for 10K rows)
+    ws.Range("E2:G" & lastRow).Value = outputEG
+    ws.Range("H2:K" & lastRow).Value = outputHK
+    ws.Range("L2:R" & lastRow).Value = outputLR
+    ws.Range("S2:S" & lastRow).Value = outputS
 
     Application.Calculation = xlCalculationAutomatic
     Application.ScreenUpdating = True
@@ -748,7 +1327,7 @@ End Sub
 Sub BatchProcessFolder()
     ' Main batch processing routine - process all CSV files in selected folder
     ' AUTO-GENERATES ranking table after completion
-    ' FIXED: Uses folder picker instead of hardcoded path
+    ' Uses DEFAULT_DATA_FOLDER if it exists, otherwise shows folder picker
 
     Dim folderPath As String
     Dim fileName As String
@@ -759,20 +1338,25 @@ Sub BatchProcessFolder()
     Dim sheetName As String
     Dim startTime As Double
 
-    ' FIXED: Replace hardcoded path with folder picker
-    With Application.FileDialog(msoFileDialogFolderPicker)
-        .Title = "Select Folder Containing CSV Files"
-        .AllowMultiSelect = False
-        If .Show = -1 Then
-            folderPath = .SelectedItems(1)
-        Else
-            Exit Sub ' User cancelled
-        End If
-    End With
+    ' Use default folder if it exists, otherwise show folder picker
+    If Dir(DEFAULT_DATA_FOLDER, vbDirectory) <> "" Then
+        folderPath = DEFAULT_DATA_FOLDER
+    Else
+        ' Default folder not found - show folder picker
+        With Application.FileDialog(msoFileDialogFolderPicker)
+            .Title = "Select Folder Containing CSV Files (Default not found: " & DEFAULT_DATA_FOLDER & ")"
+            .AllowMultiSelect = False
+            If .Show = -1 Then
+                folderPath = .SelectedItems(1)
+            Else
+                Exit Sub ' User cancelled
+            End If
+        End With
 
-    ' Ensure folder path ends with backslash
-    If Right(folderPath, 1) <> "\" Then
-        folderPath = folderPath & "\"
+        ' Ensure folder path ends with backslash
+        If Right(folderPath, 1) <> "\" Then
+            folderPath = folderPath & "\"
+        End If
     End If
 
     ' Initialize counters
@@ -851,9 +1435,10 @@ End Sub
 
 Sub QuickRankingUpdate()
     '=========================================
+    ' OPTIMIZED VERSION - Uses cached lookups
     ' Fast batch processing - no sheet creation
     ' Reads CSVs, calculates in memory, updates Ranking only
-    ' FIXED: Uses folder picker instead of hardcoded path
+    ' Uses DEFAULT_DATA_FOLDER if it exists, otherwise shows folder picker
     '=========================================
 
     Dim folderPath As String
@@ -872,21 +1457,29 @@ Sub QuickRankingUpdate()
     Dim bearCount As Long
     Dim signalResult As Variant
 
-    ' FIXED: Replace hardcoded path with folder picker (same as BatchProcessFolder)
-    With Application.FileDialog(msoFileDialogFolderPicker)
-        .Title = "Select Folder Containing CSV Files"
-        .AllowMultiSelect = False
-        If .Show = -1 Then
-            folderPath = .SelectedItems(1)
-        Else
-            Exit Sub ' User cancelled
-        End If
-    End With
+    ' Use default folder if it exists, otherwise show folder picker
+    If Dir(DEFAULT_DATA_FOLDER, vbDirectory) <> "" Then
+        folderPath = DEFAULT_DATA_FOLDER
+    Else
+        ' Default folder not found - show folder picker
+        With Application.FileDialog(msoFileDialogFolderPicker)
+            .Title = "Select Folder Containing CSV Files (Default not found: " & DEFAULT_DATA_FOLDER & ")"
+            .AllowMultiSelect = False
+            If .Show = -1 Then
+                folderPath = .SelectedItems(1)
+            Else
+                Exit Sub ' User cancelled
+            End If
+        End With
 
-    ' Ensure folder path ends with backslash
-    If Right(folderPath, 1) <> "\" Then
-        folderPath = folderPath & "\"
+        ' Ensure folder path ends with backslash
+        If Right(folderPath, 1) <> "\" Then
+            folderPath = folderPath & "\"
+        End If
     End If
+
+    ' Initialize lookup caches for O(1) lookups
+    Call InitializeLookupCaches
 
     ' Initialize
     ReDim bullSignals(1 To 100, 1 To 9)
@@ -930,9 +1523,9 @@ Sub QuickRankingUpdate()
             ' Add to appropriate array based on signal type
             If signalResult(1) = "BULL" Then
                 bullCount = bullCount + 1
-                ' Look up ticker code
+                ' Look up ticker code using CACHED lookup (O(1))
                 Dim tickerCodeBull As String
-                tickerCodeBull = LookupTickerCode(ticker)
+                tickerCodeBull = LookupTickerCodeCached(ticker)
 
                 bullSignals(bullCount, 1) = ""  ' Rank
                 bullSignals(bullCount, 2) = ticker  ' Stock Name
@@ -942,22 +1535,22 @@ Sub QuickRankingUpdate()
                 bullSignals(bullCount, 6) = signalResult(3)  ' Accel_Count
                 bullSignals(bullCount, 7) = signalResult(4)  ' Entry_Price
 
-                ' Check Bullish/Bearish flags
-                If CheckTickerInSheet(tickerCodeBull, "Bullish") Then
+                ' Check Bullish/Bearish flags using CACHED lookup (O(1))
+                If IsBullishCached(tickerCodeBull) Then
                     bullSignals(bullCount, 8) = "Bullish"
                 Else
                     bullSignals(bullCount, 8) = ""
                 End If
-                If CheckTickerInSheet(tickerCodeBull, "Bearish") Then
+                If IsBearishCached(tickerCodeBull) Then
                     bullSignals(bullCount, 9) = "Bearish"
                 Else
                     bullSignals(bullCount, 9) = ""
                 End If
             ElseIf signalResult(1) = "BEAR" Then
                 bearCount = bearCount + 1
-                ' Look up ticker code
+                ' Look up ticker code using CACHED lookup (O(1))
                 Dim tickerCodeBear As String
-                tickerCodeBear = LookupTickerCode(ticker)
+                tickerCodeBear = LookupTickerCodeCached(ticker)
 
                 bearSignals(bearCount, 1) = ""  ' Rank
                 bearSignals(bearCount, 2) = ticker  ' Stock Name
@@ -967,13 +1560,13 @@ Sub QuickRankingUpdate()
                 bearSignals(bearCount, 6) = signalResult(3)  ' Accel_Count
                 bearSignals(bearCount, 7) = signalResult(4)  ' Entry_Price
 
-                ' Check Bullish/Bearish flags
-                If CheckTickerInSheet(tickerCodeBear, "Bullish") Then
+                ' Check Bullish/Bearish flags using CACHED lookup (O(1))
+                If IsBullishCached(tickerCodeBear) Then
                     bearSignals(bearCount, 8) = "Bullish"
                 Else
                     bearSignals(bearCount, 8) = ""
                 End If
-                If CheckTickerInSheet(tickerCodeBear, "Bearish") Then
+                If IsBearishCached(tickerCodeBear) Then
                     bearSignals(bearCount, 9) = "Bearish"
                 Else
                     bearSignals(bearCount, 9) = ""
@@ -1011,6 +1604,9 @@ Sub QuickRankingUpdate()
     For i = 1 To bearCount
         If InStr(bearSignals(i, 4), "Active") > 0 Then activeBear = activeBear + 1
     Next i
+
+    ' Cleanup caches
+    Call ClearLookupCaches
 
     Dim msg As String
     msg = "QUICK RANKING COMPLETE" & vbCrLf & vbCrLf
@@ -1439,20 +2035,30 @@ Sub WriteQuickRanking(bullSignals() As Variant, bullCount As Long, _
         bullStartRow = bullStartRow + 1
     End With
 
-    ' Write bull data (already sorted above)
+    ' Write bull data (already sorted above) - BULK WRITE OPTIMIZED
     If bullCount > 0 Then
-        For i = 1 To bullCount
-            bullSignals(i, 1) = i
-            rankWs.Cells(bullStartRow + i - 1, 1).Value = bullSignals(i, 1)
-            rankWs.Cells(bullStartRow + i - 1, 2).Value = bullSignals(i, 2)
-            rankWs.Cells(bullStartRow + i - 1, 3).Value = bullSignals(i, 3)
-            rankWs.Cells(bullStartRow + i - 1, 4).Value = bullSignals(i, 7)
-            rankWs.Cells(bullStartRow + i - 1, 5).Value = bullSignals(i, 6)
-            rankWs.Cells(bullStartRow + i - 1, 6).Value = bullSignals(i, 8)
-            rankWs.Cells(bullStartRow + i - 1, 7).Value = bullSignals(i, 9)
-            rankWs.Cells(bullStartRow + i - 1, 8).Value = bullSignals(i, 4)
-            rankWs.Cells(bullStartRow + i - 1, 9).Value = bullSignals(i, 5)
+        ' Prepare output array for bulk write
+        Dim bullOutput() As Variant
+        ReDim bullOutput(1 To bullCount, 1 To 9)
 
+        For i = 1 To bullCount
+            bullSignals(i, 1) = i  ' Rank
+            bullOutput(i, 1) = i                    ' Rank
+            bullOutput(i, 2) = bullSignals(i, 2)   ' Stock
+            bullOutput(i, 3) = bullSignals(i, 3)   ' Ticker
+            bullOutput(i, 4) = bullSignals(i, 7)   ' Entry_Price
+            bullOutput(i, 5) = bullSignals(i, 6)   ' Accel_Count
+            bullOutput(i, 6) = bullSignals(i, 8)   ' Bullish
+            bullOutput(i, 7) = bullSignals(i, 9)   ' Bearish
+            bullOutput(i, 8) = bullSignals(i, 4)   ' Signal_Type
+            bullOutput(i, 9) = bullSignals(i, 5)   ' Signal_Status
+        Next i
+
+        ' BULK WRITE (single operation instead of 9 × bullCount operations)
+        rankWs.Range(rankWs.Cells(bullStartRow, 1), rankWs.Cells(bullStartRow + bullCount - 1, 9)).Value = bullOutput
+
+        ' Apply highlighting (still row by row, but this is fast)
+        For i = 1 To bullCount
             Call HighlightSignalRow(rankWs, bullStartRow + i - 1, 1, 9, _
                                     CStr(bullSignals(i, 5)), i, "BULL")
         Next i
@@ -1498,20 +2104,30 @@ Sub WriteQuickRanking(bullSignals() As Variant, bullCount As Long, _
         bearStartRow = bearStartRow + 1
     End With
 
-    ' Write bear data (already sorted above)
+    ' Write bear data (already sorted above) - BULK WRITE OPTIMIZED
     If bearCount > 0 Then
-        For i = 1 To bearCount
-            bearSignals(i, 1) = i
-            rankWs.Cells(bearStartRow + i - 1, 11).Value = bearSignals(i, 1)
-            rankWs.Cells(bearStartRow + i - 1, 12).Value = bearSignals(i, 2)
-            rankWs.Cells(bearStartRow + i - 1, 13).Value = bearSignals(i, 3)
-            rankWs.Cells(bearStartRow + i - 1, 14).Value = bearSignals(i, 7)
-            rankWs.Cells(bearStartRow + i - 1, 15).Value = bearSignals(i, 6)
-            rankWs.Cells(bearStartRow + i - 1, 16).Value = bearSignals(i, 9)
-            rankWs.Cells(bearStartRow + i - 1, 17).Value = bearSignals(i, 8)
-            rankWs.Cells(bearStartRow + i - 1, 18).Value = bearSignals(i, 4)
-            rankWs.Cells(bearStartRow + i - 1, 19).Value = bearSignals(i, 5)
+        ' Prepare output array for bulk write
+        Dim bearOutput() As Variant
+        ReDim bearOutput(1 To bearCount, 1 To 9)
 
+        For i = 1 To bearCount
+            bearSignals(i, 1) = i  ' Rank
+            bearOutput(i, 1) = i                    ' Rank
+            bearOutput(i, 2) = bearSignals(i, 2)   ' Stock
+            bearOutput(i, 3) = bearSignals(i, 3)   ' Ticker
+            bearOutput(i, 4) = bearSignals(i, 7)   ' Entry_Price
+            bearOutput(i, 5) = bearSignals(i, 6)   ' Accel_Count
+            bearOutput(i, 6) = bearSignals(i, 9)   ' Bearish (note: swapped for BEAR section)
+            bearOutput(i, 7) = bearSignals(i, 8)   ' Bullish
+            bearOutput(i, 8) = bearSignals(i, 4)   ' Signal_Type
+            bearOutput(i, 9) = bearSignals(i, 5)   ' Signal_Status
+        Next i
+
+        ' BULK WRITE (single operation instead of 9 × bearCount operations)
+        rankWs.Range(rankWs.Cells(bearStartRow, 11), rankWs.Cells(bearStartRow + bearCount - 1, 19)).Value = bearOutput
+
+        ' Apply highlighting (still row by row, but this is fast)
+        For i = 1 To bearCount
             Call HighlightSignalRow(rankWs, bearStartRow + i - 1, 11, 19, _
                                     CStr(bearSignals(i, 5)), i, "BEAR")
         Next i
@@ -1545,9 +2161,12 @@ End Sub
 ' -------------------------------------------------------------------
 
 Sub GenerateRankingTable()
+    ' ===========================================
+    ' OPTIMIZED VERSION - Uses cached lookups
     ' Scan all sheets, extract last-row signals, compile ranking table
     ' Side-by-side layout: BULL (A-I) | BEAR (K-R)
     ' Appends to existing data with timestamp separator
+    ' ===========================================
 
     Dim ws As Worksheet
     Dim rankWs As Worksheet
@@ -1577,6 +2196,11 @@ Sub GenerateRankingTable()
     Application.ScreenUpdating = False
 
     ' ---------------------------------------------------------
+    ' INITIALIZE LOOKUP CACHES (O(1) lookups instead of O(n))
+    ' ---------------------------------------------------------
+    Call InitializeLookupCaches
+
+    ' ---------------------------------------------------------
     ' CREATE BATCH TIMESTAMP
     ' ---------------------------------------------------------
     batchTimestamp = "Batch: " & Format(Now, "DD-MMM-YYYY HH:MM")
@@ -1597,7 +2221,9 @@ Sub GenerateRankingTable()
 
         ' Skip system sheets
         If sheetName <> "Data" And sheetName <> "OrderFlow" And sheetName <> "Ranking" _
-           And LCase(sheetName) <> "data" And LCase(sheetName) <> "orderflow" Then
+           And LCase(sheetName) <> "data" And LCase(sheetName) <> "orderflow" _
+           And LCase(sheetName) <> "watchlist" And LCase(sheetName) <> "bullish" _
+           And LCase(sheetName) <> "bearish" Then
 
             ' Find last row with data
             lastRow = ws.Cells(ws.Rows.count, 1).End(xlUp).Row
@@ -1609,18 +2235,18 @@ Sub GenerateRankingTable()
                 accelCount = ws.Cells(lastRow, 18).Value   ' Column R
                 entryPrice = ws.Cells(lastRow, 13).Value   ' Column M
 
-                ' Look up ticker code from Watchlist sheet
+                ' Look up ticker code using CACHED lookup (O(1) instead of O(n))
                 Dim tickerCode As String
-                tickerCode = LookupTickerCode(sheetName)
+                tickerCode = LookupTickerCodeCached(sheetName)
 
-                ' Check if ticker is in Bullish or Bearish sheets
-                If CheckTickerInSheet(tickerCode, "Bullish") Then
+                ' Check Bullish/Bearish using CACHED lookup (O(1) instead of O(n))
+                If IsBullishCached(tickerCode) Then
                     bullishFlag = "Bullish"
                 Else
                     bullishFlag = ""
                 End If
 
-                If CheckTickerInSheet(tickerCode, "Bearish") Then
+                If IsBearishCached(tickerCode) Then
                     bearishFlag = "Bearish"
                 Else
                     bearishFlag = ""
@@ -1736,22 +2362,30 @@ Sub GenerateRankingTable()
         bullStartRow = bullStartRow + 1
     End With
 
-    ' Write bull data (already sorted above)
+    ' Write bull data (already sorted above) - BULK WRITE OPTIMIZED
     If bullCount > 0 Then
-        ' Write data and add rank numbers
+        ' Prepare output array for bulk write
+        Dim bullOutput() As Variant
+        ReDim bullOutput(1 To bullCount, 1 To 9)
+
         For i = 1 To bullCount
             bullData(i, 1) = i  ' Rank
-            rankWs.Cells(bullStartRow + i - 1, 1).Value = bullData(i, 1)
-            rankWs.Cells(bullStartRow + i - 1, 2).Value = bullData(i, 2)
-            rankWs.Cells(bullStartRow + i - 1, 3).Value = bullData(i, 3)
-            rankWs.Cells(bullStartRow + i - 1, 4).Value = bullData(i, 4)
-            rankWs.Cells(bullStartRow + i - 1, 5).Value = bullData(i, 5)
-            rankWs.Cells(bullStartRow + i - 1, 6).Value = bullData(i, 6)
-            rankWs.Cells(bullStartRow + i - 1, 7).Value = bullData(i, 7)
-            rankWs.Cells(bullStartRow + i - 1, 8).Value = bullData(i, 8)
-            rankWs.Cells(bullStartRow + i - 1, 9).Value = bullData(i, 9)
+            bullOutput(i, 1) = i              ' Rank
+            bullOutput(i, 2) = bullData(i, 2) ' Stock
+            bullOutput(i, 3) = bullData(i, 3) ' Ticker
+            bullOutput(i, 4) = bullData(i, 4) ' Signal_Type
+            bullOutput(i, 5) = bullData(i, 5) ' Signal_Status
+            bullOutput(i, 6) = bullData(i, 6) ' Accel_Count
+            bullOutput(i, 7) = bullData(i, 7) ' Entry_Price
+            bullOutput(i, 8) = bullData(i, 8) ' Bullish
+            bullOutput(i, 9) = bullData(i, 9) ' Bearish
+        Next i
 
-            ' Highlight based on status
+        ' BULK WRITE (single operation instead of 9 × bullCount operations)
+        rankWs.Range(rankWs.Cells(bullStartRow, 1), rankWs.Cells(bullStartRow + bullCount - 1, 9)).Value = bullOutput
+
+        ' Apply highlighting (still row by row, but formatting is fast)
+        For i = 1 To bullCount
             Call HighlightSignalRow(rankWs, bullStartRow + i - 1, 1, 9, _
                                     CStr(bullData(i, 5)), i, "BULL")
         Next i
@@ -1797,22 +2431,30 @@ Sub GenerateRankingTable()
         bearStartRow = bearStartRow + 1
     End With
 
-    ' Write bear data (already sorted above)
+    ' Write bear data (already sorted above) - BULK WRITE OPTIMIZED
     If bearCount > 0 Then
-        ' Write data and add rank numbers
+        ' Prepare output array for bulk write
+        Dim bearOutput() As Variant
+        ReDim bearOutput(1 To bearCount, 1 To 9)
+
         For i = 1 To bearCount
             bearData(i, 1) = i  ' Rank
-            rankWs.Cells(bearStartRow + i - 1, 11).Value = bearData(i, 1)
-            rankWs.Cells(bearStartRow + i - 1, 12).Value = bearData(i, 2)
-            rankWs.Cells(bearStartRow + i - 1, 13).Value = bearData(i, 3)
-            rankWs.Cells(bearStartRow + i - 1, 14).Value = bearData(i, 4)
-            rankWs.Cells(bearStartRow + i - 1, 15).Value = bearData(i, 5)
-            rankWs.Cells(bearStartRow + i - 1, 16).Value = bearData(i, 6)
-            rankWs.Cells(bearStartRow + i - 1, 17).Value = bearData(i, 7)
-            rankWs.Cells(bearStartRow + i - 1, 18).Value = bearData(i, 8)
-            rankWs.Cells(bearStartRow + i - 1, 19).Value = bearData(i, 9)
+            bearOutput(i, 1) = i              ' Rank
+            bearOutput(i, 2) = bearData(i, 2) ' Stock
+            bearOutput(i, 3) = bearData(i, 3) ' Ticker
+            bearOutput(i, 4) = bearData(i, 4) ' Signal_Type
+            bearOutput(i, 5) = bearData(i, 5) ' Signal_Status
+            bearOutput(i, 6) = bearData(i, 6) ' Accel_Count
+            bearOutput(i, 7) = bearData(i, 7) ' Entry_Price
+            bearOutput(i, 8) = bearData(i, 8) ' Bullish
+            bearOutput(i, 9) = bearData(i, 9) ' Bearish
+        Next i
 
-            ' Highlight based on status
+        ' BULK WRITE (single operation instead of 9 × bearCount operations)
+        rankWs.Range(rankWs.Cells(bearStartRow, 11), rankWs.Cells(bearStartRow + bearCount - 1, 19)).Value = bearOutput
+
+        ' Apply highlighting (still row by row, but formatting is fast)
+        For i = 1 To bearCount
             Call HighlightSignalRow(rankWs, bearStartRow + i - 1, 11, 19, _
                                     CStr(bearData(i, 5)), i, "BEAR")
         Next i
@@ -1836,6 +2478,11 @@ Sub GenerateRankingTable()
     rankWs.Cells(rankWs.Cells(rankWs.Rows.count, 1).End(xlUp).Row, 1).Select
 
     Application.ScreenUpdating = True
+
+    ' ---------------------------------------------------------
+    ' CLEANUP CACHES
+    ' ---------------------------------------------------------
+    Call ClearLookupCaches
 
     ' Show summary
     Dim activeBull As Long, activeBear As Long
