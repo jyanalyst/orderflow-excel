@@ -13,6 +13,8 @@ SetMouseDelay, 50
 ; Configuration
 global ExportFolder := "C:\Users\siycm1.CGSCIMB\Desktop\Data\TS"
 global FirstExportDone := false
+global ExcelFile := "OrderFlowX_V5.xlsm"
+global MacroName := "QuickRankingUpdate"
 
 ; Hotkey to start export: Ctrl+Shift+E
 ^+e::
@@ -99,7 +101,14 @@ global FirstExportDone := false
     ; Calculate elapsed time
     elapsedTime := (A_TickCount - startTime) / 1000
    
-    MsgBox, Export complete!`n`nExported: %exportCount% / %numWindows% stocks`nTime: %elapsedTime% seconds`nFolder: %ExportFolder%
+    MsgBox, Export complete!`n`nExported: %exportCount% / %numWindows% stocks`nTime: %elapsedTime% seconds`nFolder: %ExportFolder%`n`nNow running Excel macro...
+
+    ; Auto-run Excel macro after export
+    if (RunExcelMacro()) {
+        ; Macro started successfully - it will show its own completion message
+    } else {
+        MsgBox, Failed to run Excel macro. Please run manually.
+    }
     return
 
 ; Extract stock name from window title
@@ -173,6 +182,54 @@ SaveExport(stockName, isFirstExport) {
         Sleep, 150
     }
    
+    return true
+}
+
+; Run Excel macro after export completes
+RunExcelMacro() {
+    global ExcelFile, MacroName
+
+    ; Find and activate Excel window
+    WinActivate, %ExcelFile%
+    Sleep, 500
+
+    ; Check if window became active
+    WinGetActiveTitle, activeTitle
+    if !InStr(activeTitle, ExcelFile) {
+        ; Try partial match
+        WinActivate, ahk_exe EXCEL.EXE
+        Sleep, 500
+        WinGetActiveTitle, activeTitle
+        if !InStr(activeTitle, ".xls") {
+            return false
+        }
+    }
+
+    ; Open Macro dialog (Alt+F8)
+    Send, !{F8}
+    Sleep, 600
+
+    ; Wait for Macro dialog to appear
+    WinWait, Macro, , 3
+    if ErrorLevel {
+        ; Dialog didn't appear, try again
+        Send, {Escape}
+        Sleep, 200
+        Send, !{F8}
+        Sleep, 600
+        WinWait, Macro, , 3
+        if ErrorLevel {
+            return false
+        }
+    }
+
+    ; Type macro name
+    Send, %MacroName%
+    Sleep, 300
+
+    ; Press Enter to run
+    Send, {Enter}
+
     return true
 }
 

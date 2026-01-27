@@ -17,6 +17,15 @@ Attribute VB_Name = "Module2"
 ' If not found, it will show the folder picker dialog
 Public Const DEFAULT_DATA_FOLDER As String = "C:\Users\siycm1.CGSCIMB\Desktop\Data\TS\"
 
+' ===========================================
+' MODULE-LEVEL CACHE VARIABLES
+' Must be declared at top of module before any Sub/Function
+' ===========================================
+Private mTickerCache As Object      ' stockName -> ticker
+Private mBullishCache As Object     ' ticker -> True
+Private mBearishCache As Object     ' ticker -> True
+Private mCacheInitialized As Boolean
+
 Function ParseDateTime(cellValue As Variant) As Date
     ' Universal date/time parser for Order Flow System
     ' Handles both text format (office) and Excel date format (home)
@@ -167,12 +176,6 @@ End Function
 ' LOOKUP CACHING SYSTEM
 ' Reduces O(n) lookups to O(1) by pre-loading into Dictionaries
 ' ===========================================
-
-' Module-level cache variables (persist within batch operation)
-Private mTickerCache As Object      ' stockName -> ticker
-Private mBullishCache As Object     ' ticker -> True
-Private mBearishCache As Object     ' ticker -> True
-Private mCacheInitialized As Boolean
 
 Sub InitializeLookupCaches()
     ' Initialize all lookup caches for batch operations
