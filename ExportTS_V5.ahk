@@ -230,6 +230,12 @@ RunExcelMacro() {
     found := false
     Loop, 10 {
         ; Check for various possible dialog titles
+        IfWinExist, Select Folder Containing CSV Files
+        {
+            WinActivate, Select Folder Containing CSV Files
+            found := true
+            break
+        }
         IfWinExist, Select Folder
         {
             WinActivate, Select Folder
@@ -242,12 +248,6 @@ RunExcelMacro() {
             found := true
             break
         }
-        IfWinExist, Browse
-        {
-            WinActivate, Browse
-            found := true
-            break
-        }
         Sleep, 200
     }
 
@@ -256,10 +256,8 @@ RunExcelMacro() {
     }
     Sleep, 400
 
-    ; For Windows folder picker dialog, type path in the folder name field
-    ; Try multiple methods to ensure path is entered correctly
-
-    ; Method 1: Try Alt+D for address bar
+    ; For Windows folder picker dialog, type path in the address bar
+    ; Alt+D focuses the address bar in Windows dialogs
     Send, !d
     Sleep, 150
 
@@ -273,20 +271,18 @@ RunExcelMacro() {
     Send, {Enter}
     Sleep, 800  ; Wait for folder to load
 
-    ; Now we need to press Enter or Tab+Enter to select the folder
-    ; The "Select Folder" button should be focused or we can Tab to it
-    Send, {Tab}
-    Sleep, 100
-    Send, {Enter}
-    Sleep, 300
+    ; Click OK button - use Alt+O or click the button directly
+    ; The OK button has accelerator key "O" based on standard Windows dialogs
+    ControlClick, Button1, Select Folder Containing CSV Files
+    Sleep, 200
 
-    ; If dialog still open, try direct Enter
-    IfWinExist, Select Folder
+    ; If dialog still open, try alternative methods
+    IfWinExist, Select Folder Containing CSV Files
     {
-        Send, {Enter}
+        Send, !o  ; Alt+O for OK button
         Sleep, 200
     }
-    IfWinExist, Browse
+    IfWinExist, Select Folder Containing CSV Files
     {
         Send, {Enter}
         Sleep, 200
