@@ -1,13 +1,15 @@
 ﻿#NoEnv
 #SingleInstance Force
+SetBatchLines, -1          ; Maximum speed
 SetTitleMatchMode, 2
-SetKeyDelay, 50
-SetMouseDelay, 50
+SetKeyDelay, 20            ; Faster key presses
+SetMouseDelay, 20          ; Faster mouse clicks
+SetWinDelay, 50            ; Faster window operations
 
 ; ============================================
 ; DZH AdvisorXs Time & Sales Export Script
-; Press Ctrl+Shift+E to export all T&S windows
-; Optimized for speed
+; Press ` (backtick) to export all T&S windows
+; SPEED OPTIMIZED
 ; ============================================
 
 ; Configuration
@@ -16,8 +18,8 @@ global FirstExportDone := false
 global ExcelFile := "OrderFlowX_V5.xlsm"
 global MacroName := "QuickRankingUpdate"
 
-; Hotkey to start export: Ctrl+Shift+E
-^+e::
+; Hotkey to start export: Backtick (`)
+`::
     ; First, find all standalone T&S windows
     windowIDs := []
     windowTitles := []
@@ -81,18 +83,18 @@ global MacroName := "QuickRankingUpdate"
         ; Activate this window
         WinActivate, ahk_id %thisID%
         WinWaitActive, ahk_id %thisID%, , 2
-        Sleep, 150
-       
+        Sleep, 50
+
         ; Right-click on T&S control
         ControlClick, TDrawGrid1, ahk_id %thisID%, , Right
-        Sleep, 250
-       
+        Sleep, 100
+
         ; Navigate menu and save
         if (SaveExport(stockName, isFirstExport)) {
             exportCount++
         }
-       
-        Sleep, 150
+
+        Sleep, 50
     }
    
     ; Mark first export as done
@@ -100,14 +102,19 @@ global MacroName := "QuickRankingUpdate"
    
     ; Calculate elapsed time
     elapsedTime := (A_TickCount - startTime) / 1000
-   
-    MsgBox, Export complete!`n`nExported: %exportCount% / %numWindows% stocks`nTime: %elapsedTime% seconds`nFolder: %ExportFolder%`n`nNow running Excel macro...
 
-    ; Auto-run Excel macro after export
-    if (RunExcelMacro()) {
-        ; Macro started successfully - it will show its own completion message
-    } else {
-        MsgBox, Failed to run Excel macro. Please run manually.
+    ; Auto-run Excel macro after export (no prompt)
+    macroSuccess := RunExcelMacro()
+
+    ; Only show dialog on error
+    if (exportCount < numWindows || !macroSuccess) {
+        errorMsg := "Export issues detected:`n`n"
+        if (exportCount < numWindows)
+            errorMsg .= "Exported: " . exportCount . " / " . numWindows . " stocks`n"
+        if (!macroSuccess)
+            errorMsg .= "Excel macro failed to run`n"
+        errorMsg .= "`nTime: " . elapsedTime . " seconds"
+        MsgBox, 16, Export Error, %errorMsg%
     }
     return
 
@@ -126,17 +133,17 @@ ExtractStockName(title) {
 ; Navigate export menu and save
 SaveExport(stockName, isFirstExport) {
     ; Navigate to Export menu item (7th item down)
-    Send, {Down}{Down}{Down}{Down}{Down}{Down}{Down}
-    Sleep, 100
-   
+    Send, {Down 7}
+    Sleep, 50
+
     ; Move right to open submenu
     Send, {Right}
-    Sleep, 150
-   
+    Sleep, 80
+
     ; Click Save As
     Send, {Enter}
-    Sleep, 300
-   
+    Sleep, 150
+
     ; Wait for Save dialog
     WinWait, Save As, , 3
     if ErrorLevel {
@@ -144,91 +151,146 @@ SaveExport(stockName, isFirstExport) {
         Send, {Escape}{Escape}{Escape}
         return false
     }
-    Sleep, 150
-   
+    Sleep, 80
+
     if (isFirstExport) {
         ; First export: select CSV and type filename
-       
+
         ; Tab to "Save as type" dropdown
         Send, {Tab}
-        Sleep, 100
-       
+        Sleep, 50
+
         ; Open dropdown and select CSV (2nd option)
         Send, {Down}{Down}
-        Sleep, 100
+        Sleep, 50
         Send, {Enter}
-        Sleep, 150
-       
+        Sleep, 80
+
         ; Tab back to filename field
-        Send, {Shift down}{Tab}{Shift up}
-        Sleep, 100
-       
+        Send, +{Tab}
+        Sleep, 50
+
         ; Type filename
         fileName := stockName . ".csv"
         Send, ^a
-        Sleep, 50
+        Sleep, 30
         SendRaw, %fileName%
-        Sleep, 150
+        Sleep, 80
     }
-   
+
     ; Press Enter to save
     Send, {Enter}
-    Sleep, 300
-   
+    Sleep, 150
+
     ; Handle overwrite confirmation
     IfWinExist, Confirm
     {
         Send, y
-        Sleep, 150
+        Sleep, 80
     }
-   
+
     return true
 }
 
 ; Run Excel macro after export completes
 RunExcelMacro() {
-    global ExcelFile, MacroName
+    global ExcelFile, MacroName, ExportFolder
 
     ; Find and activate Excel window
     WinActivate, %ExcelFile%
-    Sleep, 500
+    Sleep, 300
 
     ; Check if window became active
     WinGetActiveTitle, activeTitle
     if !InStr(activeTitle, ExcelFile) {
-        ; Try partial match
+        ; Try partial match - activate any Excel window
         WinActivate, ahk_exe EXCEL.EXE
-        Sleep, 500
-        WinGetActiveTitle, activeTitle
-        if !InStr(activeTitle, ".xls") {
-            return false
-        }
+        Sleep, 300
     }
 
     ; Open Macro dialog (Alt+F8)
     Send, !{F8}
-    Sleep, 600
+    Sleep, 500
 
     ; Wait for Macro dialog to appear
-    WinWait, Macro, , 3
+    WinWait, Macro, , 5
     if ErrorLevel {
-        ; Dialog didn't appear, try again
-        Send, {Escape}
-        Sleep, 200
-        Send, !{F8}
-        Sleep, 600
-        WinWait, Macro, , 3
-        if ErrorLevel {
-            return false
+        return false
+    }
+    Sleep, 200
+
+    ; Type macro name and run
+    SendRaw, %MacroName%
+    Sleep, 200
+    Send, {Enter}
+    Sleep, 1000  ; Wait for macro to start and show folder picker
+
+    ; Wait for folder picker dialog - try multiple possible titles
+    ; VBA FileDialog title is "Select Folder Containing CSV Files"
+    found := false
+    Loop, 10 {
+        ; Check for various possible dialog titles
+        IfWinExist, Select Folder
+        {
+            WinActivate, Select Folder
+            found := true
+            break
         }
+        IfWinExist, Browse For Folder
+        {
+            WinActivate, Browse For Folder
+            found := true
+            break
+        }
+        IfWinExist, Browse
+        {
+            WinActivate, Browse
+            found := true
+            break
+        }
+        Sleep, 200
     }
 
-    ; Type macro name
-    Send, %MacroName%
+    if (!found) {
+        return false
+    }
+    Sleep, 400
+
+    ; For Windows folder picker dialog, type path in the folder name field
+    ; Try multiple methods to ensure path is entered correctly
+
+    ; Method 1: Try Alt+D for address bar
+    Send, !d
+    Sleep, 150
+
+    ; Clear and type the path
+    Send, ^a
+    Sleep, 80
+    SendRaw, %ExportFolder%
     Sleep, 300
 
-    ; Press Enter to run
+    ; Press Enter to navigate to the folder
     Send, {Enter}
+    Sleep, 800  ; Wait for folder to load
+
+    ; Now we need to press Enter or Tab+Enter to select the folder
+    ; The "Select Folder" button should be focused or we can Tab to it
+    Send, {Tab}
+    Sleep, 100
+    Send, {Enter}
+    Sleep, 300
+
+    ; If dialog still open, try direct Enter
+    IfWinExist, Select Folder
+    {
+        Send, {Enter}
+        Sleep, 200
+    }
+    IfWinExist, Browse
+    {
+        Send, {Enter}
+        Sleep, 200
+    }
 
     return true
 }
