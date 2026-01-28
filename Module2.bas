@@ -10,12 +10,9 @@ Attribute VB_Name = "Module2"
 ' 5. PERFORMANCE OPTIMIZATIONS: Binary search, bulk arrays, cached lookups
 
 ' ===========================================
-' CONFIGURATION - DEFAULT DATA FOLDER
+' CONFIGURATION
 ' ===========================================
-' Change this to your preferred data folder location
-' If the folder exists, QuickRankingUpdate will use it automatically
-' If not found, it will show the folder picker dialog
-Public Const DEFAULT_DATA_FOLDER As String = "C:\Users\siycm1.CGSCIMB\Desktop\Data\TS\"
+' Folder picker will always be shown when running macros
 
 ' ===========================================
 ' MODULE-LEVEL CACHE VARIABLES
@@ -1330,7 +1327,6 @@ End Sub
 Sub BatchProcessFolder()
     ' Main batch processing routine - process all CSV files in selected folder
     ' AUTO-GENERATES ranking table after completion
-    ' Uses DEFAULT_DATA_FOLDER if it exists, otherwise shows folder picker
 
     Dim folderPath As String
     Dim fileName As String
@@ -1341,25 +1337,20 @@ Sub BatchProcessFolder()
     Dim sheetName As String
     Dim startTime As Double
 
-    ' Use default folder if it exists, otherwise show folder picker
-    If Dir(DEFAULT_DATA_FOLDER, vbDirectory) <> "" Then
-        folderPath = DEFAULT_DATA_FOLDER
-    Else
-        ' Default folder not found - show folder picker
-        With Application.FileDialog(msoFileDialogFolderPicker)
-            .Title = "Select Folder Containing CSV Files (Default not found: " & DEFAULT_DATA_FOLDER & ")"
-            .AllowMultiSelect = False
-            If .Show = -1 Then
-                folderPath = .SelectedItems(1)
-            Else
-                Exit Sub ' User cancelled
-            End If
-        End With
-
-        ' Ensure folder path ends with backslash
-        If Right(folderPath, 1) <> "\" Then
-            folderPath = folderPath & "\"
+    ' Always show folder picker
+    With Application.FileDialog(msoFileDialogFolderPicker)
+        .Title = "Select Folder Containing CSV Files"
+        .AllowMultiSelect = False
+        If .Show = -1 Then
+            folderPath = .SelectedItems(1)
+        Else
+            Exit Sub ' User cancelled
         End If
+    End With
+
+    ' Ensure folder path ends with backslash
+    If Right(folderPath, 1) <> "\" Then
+        folderPath = folderPath & "\"
     End If
 
     ' Initialize counters
@@ -1441,7 +1432,6 @@ Sub QuickRankingUpdate()
     ' OPTIMIZED VERSION - Uses cached lookups
     ' Fast batch processing - no sheet creation
     ' Reads CSVs, calculates in memory, updates Ranking only
-    ' Uses DEFAULT_DATA_FOLDER if it exists, otherwise shows folder picker
     '=========================================
 
     Dim folderPath As String
@@ -1460,25 +1450,20 @@ Sub QuickRankingUpdate()
     Dim bearCount As Long
     Dim signalResult As Variant
 
-    ' Use default folder if it exists, otherwise show folder picker
-    If Dir(DEFAULT_DATA_FOLDER, vbDirectory) <> "" Then
-        folderPath = DEFAULT_DATA_FOLDER
-    Else
-        ' Default folder not found - show folder picker
-        With Application.FileDialog(msoFileDialogFolderPicker)
-            .Title = "Select Folder Containing CSV Files (Default not found: " & DEFAULT_DATA_FOLDER & ")"
-            .AllowMultiSelect = False
-            If .Show = -1 Then
-                folderPath = .SelectedItems(1)
-            Else
-                Exit Sub ' User cancelled
-            End If
-        End With
-
-        ' Ensure folder path ends with backslash
-        If Right(folderPath, 1) <> "\" Then
-            folderPath = folderPath & "\"
+    ' Always show folder picker
+    With Application.FileDialog(msoFileDialogFolderPicker)
+        .Title = "Select Folder Containing CSV Files"
+        .AllowMultiSelect = False
+        If .Show = -1 Then
+            folderPath = .SelectedItems(1)
+        Else
+            Exit Sub ' User cancelled
         End If
+    End With
+
+    ' Ensure folder path ends with backslash
+    If Right(folderPath, 1) <> "\" Then
+        folderPath = folderPath & "\"
     End If
 
     ' Initialize lookup caches for O(1) lookups
